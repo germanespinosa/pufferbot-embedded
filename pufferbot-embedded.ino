@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include "ota.h"
 #include <EEPROM.h>
 #include <WiFi.h>
 
@@ -62,13 +63,15 @@ int edot_r;
 const char* ssid     = "mazenet";
 const char* password = "Albifrons2020";
 
+// 192.168.137.155
 IPAddress local_IP(192, 168, 137, 155);
-IPAddress gateway(192, 168, 137, 1);
+IPAddress gateway(192, 168, 1, 1);
 
 IPAddress subnet(255, 255, 0, 0);
 IPAddress primaryDNS(8, 8, 8, 8);   //optional
 IPAddress secondaryDNS(8, 8, 4, 4); //optional
 WiFiServer wifiServer(4500);
+OTA(5000);
 
 
 // STRUCTS
@@ -88,7 +91,7 @@ WiFiClient client;
 
 
 struct Data{
-  bool puff, led0, led1, led2, increase, decrease, brake;
+  bool puff, reset;
 } data;
 
 
@@ -179,15 +182,12 @@ void setup() {
   timerAlarmWrite(timer, 7500, true); // counter value in which the timer interupt will be generated (true - timer reloads upon generating interrupt)
   timerAlarmEnable(timer); // enables timer
 
-  // We start by connecting to a WiFi network
-  // Configures static IP address
+  // We start by connecting to a WiFi network ... Configures static IP address
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("STA Failed to configure");
   }
   delay(100);
-
   WiFi.begin(ssid, password);
-
   while (WiFi.status() != WL_CONNECTED) {
     set_off(LED2);
     set_on(LED0);
@@ -205,12 +205,13 @@ void setup() {
     all_off();
     delay(100);
   }
-  
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
   wifiServer.begin();
+  OTA_INIT();
+  delay(100);
 }
 
 
@@ -218,8 +219,12 @@ int prev_count = 0;
 uint8_t puff_state = 0;
 bool right_spin = false;
 bool left_spin = false;
+bool initial_reset = true;
+
 
 void loop() {
+  OTA_CHECK_UPDATES();
+  
   if (!client) {
     client = wifiServer.available();
     if (client) {
@@ -228,18 +233,27 @@ void loop() {
       delay(100);
     }
   }
+  
   if (client){
     if (client.connected()){
-      int i = client.read(buffer, buffer_size);
-      if (i==buffer_size) {   // a new message was received and it has the correct size.
-        client.write('o');
-        i=0;
+      while(client.read(buffer, buffer_size)){
+        data.puff = command.data & 8;
+        data.reset = command.data & 16;   
+        if (data.puff || data.reset) break;
+      }      
+      
+      // check for software reset - client need to be connected for reset to occur
+      if (data.reset){
+        Serial.println("RESTART");
+        delay(100);
+        ESP.restart();
       }
+      
       // handles timer interupt after being signalled by ISR
       if (interruptCounter > 0) { 
         // decrement shared variable in a critical section - shared var needs to be synchronized
         portENTER_CRITICAL(&timerMux);
-        interruptCounter--; // decrement since interrupt has been acknoledged
+        interruptCounter--; // decrement since interrupt has been acknowledged
         portEXIT_CRITICAL(&timerMux);
         
         // PD CONTROL
@@ -279,7 +293,7 @@ void loop() {
         ledcWrite(RIGHT_B, -pwm_right);
       }
 
-      data.puff = command.data & 8;
+//      data.puff = command.data & 8;
       if (data.puff){
           if (puff_state){
             ledcWrite(PUFF_B, 0);
@@ -303,8 +317,13 @@ void loop() {
       }  
     }
   } else{
+    // why arent the leds turning off
       set_off(LED0_PIN);
       set_off(LED1_PIN);
       set_off(LED2_PIN);
   } 
 }
+
+
+// if left and right = -120 reset ??
+// for now but can switch to bool like puff 
