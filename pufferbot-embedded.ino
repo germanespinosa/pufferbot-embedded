@@ -142,6 +142,7 @@ void dim_all(){
   dim_on(LED2);
 }
 
+long keep_alive = 0;
 
 // SETUP
 void setup() {
@@ -212,6 +213,7 @@ void setup() {
   wifiServer.begin();
   OTA_INIT();
   delay(100);
+  keep_alive = millis();
 }
 
 
@@ -221,8 +223,12 @@ bool right_spin = false;
 bool left_spin = false;
 bool initial_reset = true;
 
-
 void loop() {
+  if (millis() - keep_alive > 5000){
+      Serial.println("NO MESSAGE RECEIVED FOR TOO LONG.CHECKING OUT. PEACE!");
+      delay(100);
+      ESP.restart();
+  }
   OTA_CHECK_UPDATES();
   
   if (!client) {
@@ -236,9 +242,13 @@ void loop() {
   
   if (client){
     if (client.connected()){
-      while(client.read(buffer, buffer_size)){
-        data.puff = command.data & 8;
-        data.reset = command.data & 16;   
+      size_t message_size;
+      while(message_size = client.read(buffer, buffer_size)){
+        if (message_size == sizeof(Command)){
+          keep_alive = millis();
+          data.puff = command.data & 8;
+          data.reset = command.data & 16;   
+        }
         if (data.puff || data.reset) break;
       }      
       
