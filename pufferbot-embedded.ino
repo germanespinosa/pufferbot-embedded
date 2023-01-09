@@ -1,18 +1,20 @@
 #include "encoder.h"
+#include "ota.h"
 #include <EEPROM.h>
 #include <WiFi.h>
+
 
 ENCODER (Left, 17, 23);     
 ENCODER (Right, 16, 4);
 
-#define RIGHT_F_PIN 18  // 25
+#define RIGHT_F_PIN 18  
 #define RIGHT_F     0 
-#define RIGHT_B_PIN 19   // 26
+#define RIGHT_B_PIN 19  
 #define RIGHT_B     1
 
-#define LEFT_F_PIN  26   // 32
+#define LEFT_F_PIN  26  
 #define LEFT_F      2 
-#define LEFT_B_PIN  25   // 33
+#define LEFT_B_PIN  25  
 #define LEFT_B      3 
 
 #define PUFF_F_PIN  32
@@ -62,13 +64,15 @@ int edot_r;
 const char* ssid     = "mazenet";
 const char* password = "Albifrons2020";
 
+// 192.168.137.155
 IPAddress local_IP(192, 168, 137, 155);
-IPAddress gateway(192, 168, 137, 1);
+IPAddress gateway(192, 168, 1, 1);
 
 IPAddress subnet(255, 255, 0, 0);
 IPAddress primaryDNS(8, 8, 8, 8);   //optional
 IPAddress secondaryDNS(8, 8, 4, 4); //optional
 WiFiServer wifiServer(4500);
+OTA(5000);
 
 
 // STRUCTS
@@ -87,9 +91,14 @@ size_t buffer_size = sizeof(Command);
 WiFiClient client;
 
 
+//struct Data{
+//  bool puff, led0, led1, led2, increase, decrease, brake, reset;
+//} data;
+
 struct Data{
-  bool puff, led0, led1, led2, increase, decrease, brake;
+  bool puff, reset;
 } data;
+
 
 
 // timer interupt
@@ -139,10 +148,33 @@ void dim_all(){
   dim_on(LED2);
 }
 
+void puff1(){
+  ledcWrite(PUFF_B, 0); // make this a function
+  ledcWrite(PUFF_F, 255);
+//  all_off();
+  delay(PUFF_LEN);
+  ledcWrite(PUFF_B, 255);
+  delay(50);
+  ledcWrite(PUFF_B, 0);
+  ledcWrite(PUFF_F, 0);
+}
+
+void puff2(){
+    ledcWrite(PUFF_F, 0);
+    ledcWrite(PUFF_B, 255);
+//    all_off();
+    delay(PUFF_LEN);
+    ledcWrite(PUFF_F, 255);
+    delay(50);
+    ledcWrite(PUFF_B, 0);
+    ledcWrite(PUFF_F, 0);
+}
+
+long keep_alive = 0;
 
 // SETUP
 void setup() {
-  led_brightness = 100;
+  led_brightness = 125;  // 100
   
   Serial.begin(115200);
   delay(10);
@@ -205,12 +237,14 @@ void setup() {
     all_off();
     delay(100);
   }
-  
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
   wifiServer.begin();
+  OTA_INIT();
+  delay(100);
+  keep_alive = millis();
 }
 
 
@@ -218,8 +252,13 @@ int prev_count = 0;
 uint8_t puff_state = 0;
 bool right_spin = false;
 bool left_spin = false;
+bool initial_reset = true;
+bool wifi_reset = false;
+
 
 void loop() {
+  OTA_CHECK_UPDATES();
+
   if (!client) {
     client = wifiServer.available();
     if (client) {
@@ -228,13 +267,27 @@ void loop() {
       delay(100);
     }
   }
+  
   if (client){
-    if (client.connected()){
-      int i = client.read(buffer, buffer_size);
-      if (i==buffer_size) {   // a new message was received and it has the correct size.
-        client.write('o');
-        i=0;
+      size_t message_size;
+      while( message_size = client.read(buffer, buffer_size)){
+        if (message_size == sizeof(Command)){
+          data.puff = command.data & 8;
+          data.reset = command.data & 16;
+        }
+        if (data.puff || data.reset) break;
+      };
+
+      
+      
+      // check for software reset - client need to be connected for reset to occur
+      if (data.reset){
+        Serial.println("RESTART NOW");
+        all_off();
+        delay(100);
+        ESP.restart();
       }
+      
       // handles timer interupt after being signalled by ISR
       if (interruptCounter > 0) { 
         // decrement shared variable in a critical section - shared var needs to be synchronized
@@ -247,6 +300,9 @@ void loop() {
         e_r = command.right - current_right;
         edot_l = e_l - eprev_l;
         edot_r = e_r - eprev_r;
+//        Serial.print(command.left);
+//        Serial.print(" , ");
+//        Serial.println(command.right);
         
         
         pwm_left += round(P * (float)(e_l) + D * (float) edot_l);
@@ -279,32 +335,22 @@ void loop() {
         ledcWrite(RIGHT_B, -pwm_right);
       }
 
-      data.puff = command.data & 8;
+
+
+//      data.puff = command.data & 8;/
       if (data.puff){
           if (puff_state){
-            ledcWrite(PUFF_B, 0);
-            ledcWrite(PUFF_F, 255);
-            delay(PUFF_LEN);
-            ledcWrite(PUFF_B, 255);
-            delay(50);
-            ledcWrite(PUFF_B, 0);
-            ledcWrite(PUFF_F, 0);
+            puff1();
           } else {
-            ledcWrite(PUFF_F, 0);
-            ledcWrite(PUFF_B, 255);
-            delay(PUFF_LEN);
-            ledcWrite(PUFF_F, 255);
-            delay(50);
-            ledcWrite(PUFF_B, 0);
-            ledcWrite(PUFF_F, 0);
+            puff2();
           }
           puff_state = !puff_state;
           data.puff = false;
+          delay(100);
       }  
-    }
   } else{
-      set_off(LED0_PIN);
-      set_off(LED1_PIN);
-      set_off(LED2_PIN);
+      Serial.println("disconnect");
+      all_off();
+      delay(100);
   } 
 }
